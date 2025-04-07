@@ -4,8 +4,8 @@
     :name com.example.hello
     :main true))
 
- (def rocky
-   (M$Person. "Rocky" 42))
+(def rocky
+  (M$Person. "Rocky" 42))
 
 (defn greet
   "Callable entry point to the application."

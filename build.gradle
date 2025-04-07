@@ -33,6 +33,21 @@ repositories {
     maven {
         url "https://repo.clojars.org"
     }
+    maven {
+        url "https://jitpack.io"
+    }
+    // Try legacy Palantir repositories (even though Bintray is shut down)
+    maven {
+        url "https://palantir.bintray.com/releases/"
+    }
+    // Try GitHub Packages repository for Palantir Java Format
+    maven {
+        url "https://maven.pkg.github.com/palantir/palantir-java-format"
+    }
+    // Alternative: Add Google's Maven repository (might host Palantir's artifacts)
+    maven {
+        url "https://maven.google.com/"
+    }
 }
 
 dependencies {
@@ -429,10 +444,9 @@ tasks.withType(JavaExec).configureEach {
 
 spotless {
     java {
-        // Option 1: Using Palantir Java Format with Google style
-        // Google style uses 2 spaces for indentation by default
-        palantirJavaFormat('2.62')
-            .style('GOOGLE')  // This uses Google style with 2-space indentation
+        // Using Google Java Format directly instead of Palantir Java Format
+        // Google Java Format is more widely available in public repositories
+        googleJavaFormat()  // This uses Google's Java formatter with default settings
         
         // Configure import order with static imports at the end
         // The '' represents the default package, '\\#' represents static imports
@@ -446,10 +460,10 @@ spotless {
         endWithNewline()
     }
     
-    // Optionally format Scala files
-    scala {
-        scalafmt('3.7.17')
-    }
+    // Temporarily disabled Scala formatting due to compatibility issues with Scala 3 syntax
+    // scala {
+    //     scalafmt('3.7.17')
+    // }
 }
 
 checkerFramework {
