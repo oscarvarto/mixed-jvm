@@ -1,0 +1,357 @@
+plugins {
+    id 'scala'
+    id 'dev.clojurephant.clojure' version '0.8.0-beta.7.30+20250407T074932Z'
+    id 'application'
+}
+
+group = 'com.example'
+version = '1.0-SNAPSHOT'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
+}
+
+repositories {
+    mavenCentral()
+    maven {
+        url "https://repo.clojars.org"
+    }
+}
+
+dependencies {
+    // Scala dependencies
+    implementation 'org.scala-lang:scala3-library_3:3.6.4'
+    
+    // Clojure dependencies
+    implementation 'org.clojure:clojure:1.12.0'
+    
+    // Other dependencies
+    implementation 'org.slf4j:slf4j-api:2.1.0-alpha1'
+    implementation 'ch.qos.logback:logback-classic:1.5.18'
+    implementation 'com.taoensso:telemere:1.0.0-RC5'
+    
+    // Test dependencies
+    devImplementation 'nrepl:nrepl:1.3.1'
+    devImplementation 'cider:cider-nrepl:0.53.2'
+    devImplementation 'org.clojure:tools.namespace:1.5.0'
+    
+    // Annotation processing
+    // compileOnly 'org.projectlombok:lombok:1.18.38'
+    // annotationProcessor 'org.projectlombok:lombok:1.18.38'
+}
+
+sourceSets {
+    main {
+        scala {
+            srcDirs = ['src/main/scala']
+        }
+        clojure {
+            srcDirs = ['src/main/clojure']
+            // Do not add output to compile classpath - this prevents circular deps
+        }
+        resources {
+            srcDirs = ['src/main/resources', 'src/main/clojure']
+        }
+    }
+}
+
+// Create a custom configuration for Clojure compilation
+configurations {
+    clojureCompile
+}
+
+// Create directories we'll need
+def clojureOutputDir = file("$buildDir/classes/clojure/main")
+def javaOutputDir = file("$buildDir/classes/java/main")
+def scalaOutputDir = file("$buildDir/classes/scala/main")
+
+// Create our own custom task for Clojure compilation
+task compileClojureCustom(type: JavaExec) {
+    description = 'Compiles Clojure source files without circular dependencies'
+    group = 'build'
+    
+    // This task must run AFTER classes are compiled, not as part of classes compilation
+    dependsOn 'classes'
+    
+    // Set up the classpath for Clojure compilation - make sure to include source directories
+    classpath = files(
+        configurations.compileClasspath,
+        javaOutputDir,
+        scalaOutputDir,
+        sourceSets.main.clojure.srcDirs  // Add Clojure source directories
+    )
+    
+    // Configure Clojure compiler main class
+    mainClass = 'clojure.main'
+    
+    // Ensure the output directory exists
+    doFirst {
+        clojureOutputDir.mkdirs()
+        
+        // Print diagnostic information about the classpath
+        logger.lifecycle("=== Clojure Compilation Classpath ===")
+        logger.lifecycle("Output directory: ${clojureOutputDir}")
+        logger.lifecycle("Source directories: ${sourceSets.main.clojure.srcDirs}")
+        logger.lifecycle("Classpath entries:")
+        classpath.each { entry ->
+            logger.lifecycle("  ${entry}")
+        }
+    }
+    
+    // Arguments to the Clojure compiler with better error handling and AOT compilation
+    args = [
+        '-e',
+        """
+        (try
+          (println \"Setting up AOT compilation for Clojure files\")
+          
+          ;; Print classpath for diagnosis
+          (println \"Java classpath:\")
+          (doseq [path (sort (.split (System/getProperty \"java.class.path\") \":\"))]
+            (println \"  \" path))
+          
+          ;; Use binding macro for dynamic vars instead of set!
+          (binding [*compile-path* \"${clojureOutputDir}\"
+                    *compile-files* true]
+            (println \"Compile path set to: \" *compile-path*)
+            
+            ;; Load and compile the namespace with gen-class
+            (println \"\\nCompiling namespaces:\")
+            (try
+              (println \"  Loading com.example.hello for compilation\")
+              (require 'com.example.hello :reload)
+              (println \"  Forcing AOT compilation of com.example.hello\")
+              (compile 'com.example.hello)
+              (println \"  Successfully compiled com.example.hello\")
+              
+              ;; List generated class files to verify
+              (println \"\\nVerifying generated class files in \" *compile-path*)
+              (let [output-dir (java.io.File. *compile-path*)
+                    class-files (seq (.listFiles output-dir))]
+                (if class-files
+                  (doseq [file (file-seq output-dir)]
+                    (when (.isFile file)
+                      (println \"  Found: \" (.getPath file))))
+                  (println \"  No class files found in \" *compile-path*)))
+                  
+              (catch Exception e
+                (println \"ERROR: Failed to compile com.example.hello: \" (.getMessage e))
+                (println \"Stack trace:\")
+                (doseq [element (.getStackTrace e)]
+                  (println \"  \" element))
+                (throw e))))
+          
+          (catch Exception e
+            (println \"Clojure compilation failed: \" (.getMessage e))
+            (System/exit 1)))
+        """
+    ]
+    
+    // Set outputs for up-to-date checking
+    outputs.dir(clojureOutputDir)
+}
+
+// Disable the standard Clojure compilation tasks
+afterEvaluate {
+    // Disable built-in Clojurephant tasks that cause circular dependencies
+    tasks.matching { task ->
+        task.name == 'compileClojure' || task.name == 'checkClojure' || 
+        task.name.contains('CheckClojure') || task.name.contains('clojureCheck')
+    }.configureEach {
+        enabled = false
+        logger.lifecycle("Disabled ${name} task to prevent circular dependencies")
+    }
+}
+clojure {
+    builds {
+        main {
+            aotNamespaces = ['com.example.hello']
+            // Don't include checkNamespaces to avoid creating the checkClojure task
+            // checkNamespaces = ['com.example.*']
+        }
+    }
+}
+
+// Integrate our custom Clojure compilation task into the build lifecycle
+gradle.projectsEvaluated {
+    // Ensure custom Clojure compilation runs as part of the build
+    tasks.matching { it.name == 'assemble' || it.name == 'build' }.all {
+        dependsOn compileClojureCustom
+    }
+    
+    // Add the Clojure output directory to the runtime classpath - make it very explicit
+    sourceSets.main.output.dir(clojureOutputDir)
+    
+    // Also ensure it's part of the resources output
+    sourceSets.main.resources.srcDirs.each { dir ->
+        if (dir.toString().contains('clojure')) {
+            logger.lifecycle("Ensuring Clojure source directory is processed: ${dir}")
+        }
+    }
+    
+    // Log what we're doing
+    logger.lifecycle("=== Custom Build Configuration ===")
+    logger.lifecycle("Configured build to use custom Clojure compilation task")
+    logger.lifecycle("Clojure output will be in: ${clojureOutputDir}")
+    logger.lifecycle("Custom task dependencies: ${compileClojureCustom.dependsOn}")
+    
+    // Verify key task configurations
+    ['classes', 'compileJava', 'compileScala'].each { taskName ->
+        def task = tasks.findByName(taskName)
+        if (task) {
+            logger.lifecycle("Task ${taskName} dependencies: ${task.dependsOn}")
+        }
+    }
+}
+
+// Ensure classes task has the standard dependencies but not Clojure
+tasks.named('classes').configure {
+    // Only depend on standard tasks
+    dependsOn 'compileJava', 'compileScala', 'processResources'
+}
+
+// Make sure the jar task depends on our custom Clojure compilation
+tasks.named('jar').configure {
+    dependsOn compileClojureCustom
+    
+    // Set a strategy for handling duplicate files
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
+// Create a diagnostic task to help with debugging build issues
+task printDependencyGraph {
+    description = 'Prints the dependency graph of key tasks'
+    group = 'help'
+    
+    doLast {
+        println "\n=== Task Dependency Graph ==="
+        ['build', 'assemble', 'classes', 'compileJava', 'compileScala', 'compileClojureCustom'].each { taskName ->
+            def task = tasks.findByName(taskName)
+            if (task) {
+                println "${taskName} depends on: ${task.dependsOn}"
+                if (task.taskDependencies) {
+                    println "  Dependencies: ${task.taskDependencies.getDependencies(task)}"
+                }
+                if (task.finalizedBy) {
+                    println "  Finalized by: ${task.finalizedBy.getDependencies(task)}"
+                }
+            } else {
+                println "${taskName} not found"
+            }
+        }
+    }
+}
+
+// Run our dependency graph task at the end of configuration
+tasks.matching { it.name == 'tasks' }.all {
+    finalizedBy printDependencyGraph
+}
+
+application {
+    mainClass = 'com.example.hello'
+}
+
+tasks.withType(ScalaCompile).configureEach {
+    scalaCompileOptions.with {
+        additionalParameters = [
+            '-feature',
+            '-deprecation'
+        ]
+    }
+}
+
+// Ensure Scala compiles before Clojure
+// This section is now properly implemented above
+
+task verifyScalaClojureInterop(type: JavaExec) {
+    description = 'Verifies that Clojure can call Scala code'
+    group = 'verification'
+    
+    // Explicitly add all necessary classpath elements including Clojure output
+    classpath = files(
+        sourceSets.main.runtimeClasspath,
+        clojureOutputDir  // Explicitly add the Clojure output directory
+    )
+    
+    // Main class for verification
+    mainClass = 'com.example.hello'
+    args = ['ScalaClojureGradleTester']
+    
+    // Add diagnostics to help with debugging
+    doFirst {
+        logger.lifecycle("=== Verification Task Classpath ===")
+        logger.lifecycle("Verifying with main class: ${mainClass}")
+        logger.lifecycle("Classpath entries:")
+        classpath.each { entry ->
+            logger.lifecycle("  ${entry}")
+        }
+        
+        // Print the contents of the Clojure output directory
+        logger.lifecycle("Contents of Clojure output directory (${clojureOutputDir}):")
+        if (clojureOutputDir.exists()) {
+            clojureOutputDir.eachFileRecurse { file ->
+                logger.lifecycle("  ${file.path}")
+            }
+        } else {
+            logger.lifecycle("  Directory doesn't exist!")
+        }
+        
+        // Check if the main class file exists
+        def mainClassFile = new File(clojureOutputDir, "com/example/hello.class")
+        if (mainClassFile.exists()) {
+            logger.lifecycle("Main class file exists: ${mainClassFile.path}")
+        } else {
+            logger.lifecycle("WARNING: Main class file not found at ${mainClassFile.path}")
+        }
+    }
+}
+
+// Add verification to the check task
+tasks.named('check').configure {
+    // First run our custom Clojure compilation, then verify the interop
+    dependsOn compileClojureCustom, verifyScalaClojureInterop
+}
+
+// Make sure our custom Clojure compilation runs before verifyScalaClojureInterop
+tasks.named('verifyScalaClojureInterop').configure {
+    dependsOn compileClojureCustom
+    
+    // Make absolutely sure the Clojure output is on the classpath
+    doFirst {
+        // Add Clojure output directory to Java system properties to ensure visibility
+        systemProperty 'java.class.path', "${classpath.asPath}"
+        
+        // Print the system classpath that will be used
+        logger.lifecycle("System classpath to be used: ${System.getProperty('java.class.path')}")
+    }
+}
+
+// Add a task to inspect the Clojure output directory contents
+task inspectClojureOutput {
+    description = 'Inspects the Clojure output directory to verify class files'
+    group = 'verification'
+    dependsOn compileClojureCustom
+    
+    doLast {
+        logger.lifecycle("=== Clojure Output Directory Contents ===")
+        logger.lifecycle("Directory: ${clojureOutputDir}")
+        
+        if (clojureOutputDir.exists()) {
+            def foundFiles = false
+            clojureOutputDir.eachFileRecurse { file ->
+                foundFiles = true
+                logger.lifecycle("  ${file.path}")
+            }
+            if (!foundFiles) {
+                logger.lifecycle("  No files found in directory!")
+            }
+        } else {
+            logger.lifecycle("  Directory doesn't exist!")
+        }
+    }
+}
+
+wrapper {
+    gradleVersion = '8.13'
+}
