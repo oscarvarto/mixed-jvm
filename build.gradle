@@ -1,4 +1,9 @@
 plugins {
+    id 'com.github.ben-manes.versions' version '0.52.0'
+    id 'io.freefair.lombok' version '8.12.1'
+    id 'org.checkerframework' version '0.6.53'
+    id 'com.diffplug.spotless' version '7.0.2'
+
     id 'scala'
     id 'dev.clojurephant.clojure' version '0.8.0-beta.7.30+20250407T074932Z'
     id 'application'
@@ -8,8 +13,19 @@ group = 'com.example'
 version = '1.0-SNAPSHOT'
 
 java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(24)
+        // Optionally specify vendor if needed
+        // vendor = JvmVendorSpec.ADOPTIUM
+    }
+    sourceCompatibility = JavaVersion.VERSION_24
+    targetCompatibility = JavaVersion.VERSION_24
+}
+
+lombok { version = "1.18.38" }
+
+scala {
+    scalaVersion = "3.6.4"
 }
 
 repositories {
@@ -20,25 +36,35 @@ repositories {
 }
 
 dependencies {
+    compileOnly 'org.checkerframework:checker-qual:3.49.2'
+    testCompileOnly 'org.checkerframework:checker-qual:3.49.2'
+    checkerFramework 'org.checkerframework:checker:3.49.2'
+    implementation 'org.checkerframework:checker-util:3.49.2'
+
     // Scala dependencies
     implementation 'org.scala-lang:scala3-library_3:3.6.4'
     
     // Clojure dependencies
     implementation 'org.clojure:clojure:1.12.0'
-    
+    implementation 'org.clojure:java.data:1.3.113'
+    testRuntimeOnly 'org.ajoberstar:jovial:0.3.0'
+
     // Other dependencies
     implementation 'org.slf4j:slf4j-api:2.1.0-alpha1'
     implementation 'ch.qos.logback:logback-classic:1.5.18'
     implementation 'com.taoensso:telemere:1.0.0-RC5'
-    
+
     // Test dependencies
     devImplementation 'nrepl:nrepl:1.3.1'
     devImplementation 'cider:cider-nrepl:0.53.2'
     devImplementation 'org.clojure:tools.namespace:1.5.0'
     
     // Annotation processing
-    // compileOnly 'org.projectlombok:lombok:1.18.38'
-    // annotationProcessor 'org.projectlombok:lombok:1.18.38'
+    compileOnly 'org.projectlombok:lombok:1.18.38'
+    annotationProcessor 'org.projectlombok:lombok:1.18.38'
+
+    testImplementation 'org.testng:testng:7.11.0'
+    testImplementation 'org.assertj:assertj-core:4.0.0-M1'
 }
 
 sourceSets {
@@ -62,14 +88,19 @@ configurations {
 }
 
 // Create directories we'll need
-def clojureOutputDir = file("$buildDir/classes/clojure/main")
-def javaOutputDir = file("$buildDir/classes/java/main")
-def scalaOutputDir = file("$buildDir/classes/scala/main")
+def clojureOutputDir = layout.buildDirectory.file("classes/clojure/main").get().asFile
+def javaOutputDir = layout.buildDirectory.file("classes/java/main").get().asFile
+def scalaOutputDir = layout.buildDirectory.file("classes/scala/main").get().asFile
 
 // Create our own custom task for Clojure compilation
-task compileClojureCustom(type: JavaExec) {
+tasks.register('compileClojureCustom', JavaExec) {
     description = 'Compiles Clojure source files without circular dependencies'
     group = 'build'
+    
+    // Use the JDK 24 toolchain for this JavaExec task
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(24)
+    }
     
     // This task must run AFTER classes are compiled, not as part of classes compilation
     dependsOn 'classes'
@@ -163,6 +194,7 @@ afterEvaluate {
         logger.lifecycle("Disabled ${name} task to prevent circular dependencies")
     }
 }
+
 clojure {
     builds {
         main {
@@ -220,7 +252,7 @@ tasks.named('jar').configure {
 }
 
 // Create a diagnostic task to help with debugging build issues
-task printDependencyGraph {
+tasks.register('printDependencyGraph') {
     description = 'Prints the dependency graph of key tasks'
     group = 'help'
     
@@ -253,6 +285,11 @@ application {
 }
 
 tasks.withType(ScalaCompile).configureEach {
+    // Use the JDK 24 toolchain for Scala compilation
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(24)
+    }
+    
     scalaCompileOptions.with {
         additionalParameters = [
             '-feature',
@@ -264,9 +301,14 @@ tasks.withType(ScalaCompile).configureEach {
 // Ensure Scala compiles before Clojure
 // This section is now properly implemented above
 
-task verifyScalaClojureInterop(type: JavaExec) {
+tasks.register('verifyScalaClojureInterop', JavaExec) {
     description = 'Verifies that Clojure can call Scala code'
     group = 'verification'
+    
+    // Use the JDK 24 toolchain for this JavaExec task
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(24)
+    }
     
     // Explicitly add all necessary classpath elements including Clojure output
     classpath = files(
@@ -328,7 +370,7 @@ tasks.named('verifyScalaClojureInterop').configure {
 }
 
 // Add a task to inspect the Clojure output directory contents
-task inspectClojureOutput {
+tasks.register('inspectClojureOutput') {
     description = 'Inspects the Clojure output directory to verify class files'
     group = 'verification'
     dependsOn compileClojureCustom
@@ -344,7 +386,7 @@ task inspectClojureOutput {
                 logger.lifecycle("  ${file.path}")
             }
             if (!foundFiles) {
-                logger.lifecycle("  No files found in directory!")
+                logger.lifecycle("  No files found in directory")
             }
         } else {
             logger.lifecycle("  Directory doesn't exist!")
@@ -354,4 +396,69 @@ task inspectClojureOutput {
 
 wrapper {
     gradleVersion = '8.13'
+}
+
+// Add a task to print Java version information
+tasks.register('printJavaVersion', JavaExec) {
+    description = 'Prints information about the Java version being used'
+    group = 'verification'
+    
+    // Use the JDK 24 toolchain
+    javaLauncher = javaToolchains.launcherFor {
+        languageVersion = JavaLanguageVersion.of(24)
+    }
+    
+    classpath = sourceSets.main.runtimeClasspath
+    mainClass = 'com.example.JavaVersionPrinter'
+    
+    doFirst {
+        logger.lifecycle("=== Java Version Information Task ===")
+        logger.lifecycle("Using Java launcher: ${javaLauncher.get().metadata}")
+    }
+}
+
+// Make sure all JavaExec tasks use the JDK 24 toolchain
+tasks.withType(JavaExec).configureEach {
+    // Skip those that already have a launcher configured
+    if (!project.hasProperty('javaLauncher')) {
+        javaLauncher = javaToolchains.launcherFor {
+            languageVersion = JavaLanguageVersion.of(24)
+        }
+    }
+}
+
+spotless {
+    java {
+        // Option 1: Using Palantir Java Format with Google style
+        // Google style uses 2 spaces for indentation by default
+        palantirJavaFormat('2.62')
+            .style('GOOGLE')  // This uses Google style with 2-space indentation
+        
+        // Configure import order with static imports at the end
+        // The '' represents the default package, '\\#' represents static imports
+        importOrder('java', 'javax', 'org', 'com', '', '\\#')
+            .wildcardsLast(false)
+            .semanticSort()
+        
+        // Other formatting options
+        removeUnusedImports()
+        formatAnnotations()
+        endWithNewline()
+    }
+    
+    // Optionally format Scala files
+    scala {
+        scalafmt('3.7.17')
+    }
+}
+
+checkerFramework {
+    checkers = [
+            'org.checkerframework.checker.nullness.NullnessChecker'
+    ]
+}
+
+tasks.withType(Test).configureEach {
+    useTestNG()
+    maxHeapSize = '16G'
 }
